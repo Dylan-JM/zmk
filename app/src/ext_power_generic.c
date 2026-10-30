@@ -47,15 +47,6 @@ static void ext_power_save_state_work(struct k_work *work) {
 static struct k_work_delayable ext_power_save_work;
 #endif
 
-int ext_power_save_state(void) {
-#if IS_ENABLED(CONFIG_SETTINGS)
-    int ret = k_work_reschedule(&ext_power_save_work, K_MSEC(CONFIG_ZMK_SETTINGS_SAVE_DEBOUNCE));
-    return MIN(ret, 0);
-#else
-    return 0;
-#endif
-}
-
 static int ext_power_generic_enable(const struct device *dev) {
     struct ext_power_generic_data *data = dev->data;
     const struct ext_power_generic_config *config = dev->config;
@@ -68,7 +59,7 @@ static int ext_power_generic_enable(const struct device *dev) {
         }
     }
     data->status = true;
-    return ext_power_save_state();
+    return 0;
 }
 
 static int ext_power_generic_disable(const struct device *dev) {
@@ -83,7 +74,7 @@ static int ext_power_generic_disable(const struct device *dev) {
         }
     }
     data->status = false;
-    return ext_power_save_state();
+    return 0;
 }
 
 static int ext_power_generic_get(const struct device *dev) {

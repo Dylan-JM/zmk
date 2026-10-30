@@ -400,12 +400,15 @@ static void rgb_underglow_apply_power(bool on) {
 static void rgb_underglow_update_battery(bool sampled) {
     uint8_t soc = zmk_battery_state_of_charge();
     bool usb = nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
-    bool was_low = battery.low;
 
     // no sample yet
     if (!soc) {
         return;
     }
+
+    // atomic with idle and on/off
+    k_sched_lock();
+    bool was_low = battery.low;
 
     if (usb) {
         // low held while charging, reading is inflated
@@ -425,6 +428,8 @@ static void rgb_underglow_update_battery(bool sampled) {
     if (battery.low != was_low && !state.on && sleep_state.is_awake) {
         rgb_underglow_apply_power(battery.low);
     }
+
+    k_sched_unlock();
 }
 
 static int rgb_underglow_battery_listener(const zmk_event_t *eh) {
