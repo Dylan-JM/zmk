@@ -146,20 +146,6 @@ on_keymap_binding_convert_central_state_dependent_params(struct zmk_behavior_bin
         binding->param1 = state ? RGB_OFF_CMD : RGB_ON_CMD;
         break;
     }
-    case RGB_BRI_CMD: {
-        struct zmk_led_hsb color = zmk_rgb_underglow_calc_brt(1);
-
-        binding->param1 = RGB_COLOR_HSB_CMD;
-        binding->param2 = RGB_COLOR_HSB_VAL(color.h, color.s, color.b);
-        break;
-    }
-    case RGB_BRD_CMD: {
-        struct zmk_led_hsb color = zmk_rgb_underglow_calc_brt(-1);
-
-        binding->param1 = RGB_COLOR_HSB_CMD;
-        binding->param2 = RGB_COLOR_HSB_VAL(color.h, color.s, color.b);
-        break;
-    }
     case RGB_HUI_CMD: {
         struct zmk_led_hsb color = zmk_rgb_underglow_calc_hue(1);
 
