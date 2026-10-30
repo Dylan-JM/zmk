@@ -20,10 +20,12 @@
 #include <zmk/rgb_underglow.h>
 
 #include <zmk/activity.h>
+#include <zmk/battery.h>
 #include <zmk/keymap.h>
 #include <zmk/usb.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/battery_state_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/workqueue.h>
 
@@ -147,6 +149,43 @@ static struct led_rgb rgb_scaled(uint32_t rgb, uint8_t b) {
     };
 }
 
+#define FN_ROW_NODE DT_INST(0, zmk_underglow_fn_row)
+
+#if DT_NODE_EXISTS(FN_ROW_NODE) && IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+#define HAS_BATTERY_ROW 1
+
+#include <hal/nrf_power.h>
+
+static const uint8_t fn_row_leds[] = DT_PROP(FN_ROW_NODE, leds);
+
+static struct {
+    bool low;
+    bool usb;
+    bool charged;
+} battery;
+#endif
+
+static bool rgb_underglow_battery_low(void) {
+#if defined(HAS_BATTERY_ROW)
+    return battery.low;
+#else
+    return false;
+#endif
+}
+
+static uint8_t rgb_underglow_brightness(void) {
+#if defined(HAS_BATTERY_ROW)
+    if (battery.low && !battery.usb) {
+        return MIN(state.color.b, CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY_BRT);
+    }
+#endif
+    return state.color.b;
+}
+
+static bool rgb_underglow_visible(void) {
+    return sleep_state.is_awake && (state.on || rgb_underglow_battery_low());
+}
+
 #define LAYER_COLORS_NODE DT_INST(0, zmk_underglow_layer_colors)
 
 #if DT_NODE_EXISTS(LAYER_COLORS_NODE) &&                                                           \
@@ -199,19 +238,42 @@ static void zmk_rgb_underglow_apply_layer_colors(void) {
 
     if (active->has_background) {
         for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-            pixels[i] = rgb_scaled(active->background, state.color.b);
+            pixels[i] = rgb_scaled(active->background, rgb_underglow_brightness());
         }
     }
 
     for (int i = 0; i < active->len; i++) {
-        pixels[active->leds[i]] = rgb_scaled(active->colors[i], state.color.b);
+        pixels[active->leds[i]] = rgb_scaled(active->colors[i], rgb_underglow_brightness());
     }
 }
 #endif
 
+#if defined(HAS_BATTERY_ROW)
+static void zmk_rgb_underglow_apply_battery_row(void) {
+    uint32_t color;
+
+    if (battery.low) {
+        color = 0xFF0000;
+    } else if (battery.charged && state.on) {
+        color = 0x00FF00;
+    } else {
+        return;
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(fn_row_leds); i++) {
+        pixels[fn_row_leds[i]] = rgb_scaled(color, rgb_underglow_brightness());
+    }
+}
+
+static void rgb_underglow_update_battery(void);
+#endif
+
 static void zmk_rgb_underglow_effect_solid(void) {
+    struct zmk_led_hsb color = state.color;
+    color.b = rgb_underglow_brightness();
+
     for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-        pixels[i] = hsb_to_rgb(hsb_scale_min_max(state.color));
+        pixels[i] = hsb_to_rgb(hsb_scale_min_max(color));
     }
 
 #if defined(HAS_LAYER_COLORS)
@@ -259,20 +321,34 @@ static void zmk_rgb_underglow_effect_swirl(void) {
 }
 
 static void zmk_rgb_underglow_tick(struct k_work *work) {
-    switch (state.current_effect) {
-    case UNDERGLOW_EFFECT_SOLID:
-        zmk_rgb_underglow_effect_solid();
-        break;
-    case UNDERGLOW_EFFECT_BREATHE:
-        zmk_rgb_underglow_effect_breathe();
-        break;
-    case UNDERGLOW_EFFECT_SPECTRUM:
-        zmk_rgb_underglow_effect_spectrum();
-        break;
-    case UNDERGLOW_EFFECT_SWIRL:
-        zmk_rgb_underglow_effect_swirl();
-        break;
+#if defined(HAS_BATTERY_ROW)
+    rgb_underglow_update_battery();
+#endif
+
+    if (!state.on) {
+        for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+            pixels[i] = (struct led_rgb){r : 0, g : 0, b : 0};
+        }
+    } else {
+        switch (state.current_effect) {
+        case UNDERGLOW_EFFECT_SOLID:
+            zmk_rgb_underglow_effect_solid();
+            break;
+        case UNDERGLOW_EFFECT_BREATHE:
+            zmk_rgb_underglow_effect_breathe();
+            break;
+        case UNDERGLOW_EFFECT_SPECTRUM:
+            zmk_rgb_underglow_effect_spectrum();
+            break;
+        case UNDERGLOW_EFFECT_SWIRL:
+            zmk_rgb_underglow_effect_swirl();
+            break;
+        }
     }
+
+#if defined(HAS_BATTERY_ROW)
+    zmk_rgb_underglow_apply_battery_row();
+#endif
 
     int err = led_strip_update_rgb(led_strip, pixels, STRIP_NUM_PIXELS);
     if (err < 0) {
@@ -283,7 +359,7 @@ static void zmk_rgb_underglow_tick(struct k_work *work) {
 K_WORK_DEFINE(underglow_tick_work, zmk_rgb_underglow_tick);
 
 static void zmk_rgb_underglow_tick_handler(struct k_timer *timer) {
-    if (!state.on) {
+    if (!rgb_underglow_visible()) {
         return;
     }
 
@@ -319,6 +395,39 @@ static void rgb_underglow_apply_power(bool on) {
     }
 }
 
+#if defined(HAS_BATTERY_ROW)
+static void rgb_underglow_update_battery(void) {
+    uint8_t soc = zmk_battery_state_of_charge();
+    bool usb = nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
+    bool was_low = battery.low;
+
+    // no sample yet
+    if (!soc) {
+        return;
+    }
+
+    if (!usb) {
+        battery.low =
+            soc <= CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY ||
+            (battery.low && !battery.usb && soc < CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY_CLEAR);
+    }
+    battery.usb = usb;
+    battery.charged = usb && soc >= CONFIG_ZMK_RGB_UNDERGLOW_CHARGED;
+
+    if (battery.low != was_low && !state.on && sleep_state.is_awake) {
+        rgb_underglow_apply_power(battery.low);
+    }
+}
+
+static int rgb_underglow_battery_listener(const zmk_event_t *eh) {
+    rgb_underglow_update_battery();
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(rgb_underglow_battery, rgb_underglow_battery_listener);
+ZMK_SUBSCRIPTION(rgb_underglow_battery, zmk_battery_state_changed);
+#endif
+
 #if IS_ENABLED(CONFIG_SETTINGS)
 static int rgb_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
     const char *next;
@@ -337,7 +446,7 @@ static int rgb_settings_set(const char *name, size_t len, settings_read_cb read_
 }
 
 static int rgb_settings_commit(void) {
-    rgb_underglow_apply_power(state.on && sleep_state.is_awake);
+    rgb_underglow_apply_power(rgb_underglow_visible());
     return 0;
 }
 
@@ -411,7 +520,7 @@ int zmk_rgb_underglow_on(void) {
 
     state.on = true;
     if (sleep_state.is_awake) {
-        rgb_underglow_apply_power(true);
+        rgb_underglow_apply_power(rgb_underglow_visible());
     }
 
     return zmk_rgb_underglow_save_state();
@@ -423,7 +532,7 @@ int zmk_rgb_underglow_off(void) {
 
     state.on = false;
     if (sleep_state.is_awake) {
-        rgb_underglow_apply_power(false);
+        rgb_underglow_apply_power(rgb_underglow_visible());
     }
 
     return zmk_rgb_underglow_save_state();
@@ -550,7 +659,7 @@ static int rgb_underglow_auto_state(bool target_wake_state) {
     }
     sleep_state.is_awake = target_wake_state;
 
-    if (state.on) {
+    if (state.on || rgb_underglow_battery_low()) {
         rgb_underglow_apply_power(sleep_state.is_awake);
     }
 

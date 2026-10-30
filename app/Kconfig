@@ -335,6 +335,22 @@ config ZMK_RGB_UNDERGLOW_AUTO_OFF_USB
     bool "Turn off RGB underglow when USB is disconnected"
     depends on USB_DEVICE_STACK
 
+config ZMK_RGB_UNDERGLOW_LOW_BATTERY
+    int "Battery percentage at or below which the F row turns red and brightness is capped"
+    default 20
+
+config ZMK_RGB_UNDERGLOW_LOW_BATTERY_CLEAR
+    int "Battery percentage at or above which the low battery state clears"
+    default 25
+
+config ZMK_RGB_UNDERGLOW_LOW_BATTERY_BRT
+    int "Brightness cap while the battery is low"
+    default 10
+
+config ZMK_RGB_UNDERGLOW_CHARGED
+    int "Battery percentage on USB at which the F row turns green"
+    default 95
+
 endif # ZMK_RGB_UNDERGLOW
 
 menuconfig ZMK_BACKLIGHT

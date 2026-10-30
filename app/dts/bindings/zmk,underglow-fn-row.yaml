@@ -1,0 +1,12 @@
+# Copyright (c) 2026 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: Underglow LEDs that show low battery and charging state
+
+compatible: "zmk,underglow-fn-row"
+
+properties:
+  leds:
+    type: array
+    required: true
+    description: LED strip indices
