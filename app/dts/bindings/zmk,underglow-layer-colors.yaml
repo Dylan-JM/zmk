@@ -1,0 +1,24 @@
+# Copyright (c) 2026 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: Per-key underglow colours shown while a keymap layer is active
+
+compatible: "zmk,underglow-layer-colors"
+
+child-binding:
+  description: Colours for one layer
+  properties:
+    layer:
+      type: int
+      required: true
+    leds:
+      type: array
+      required: true
+      description: LED strip indices
+    colors:
+      type: array
+      required: true
+      description: 0xRRGGBB colour per entry in leds
+    background:
+      type: int
+      description: 0xRRGGBB colour for LEDs not listed in leds

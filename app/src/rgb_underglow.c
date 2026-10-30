@@ -20,6 +20,7 @@
 #include <zmk/rgb_underglow.h>
 
 #include <zmk/activity.h>
+#include <zmk/keymap.h>
 #include <zmk/usb.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
@@ -136,10 +137,86 @@ static struct led_rgb hsb_to_rgb(struct zmk_led_hsb hsb) {
     return rgb;
 }
 
+static struct led_rgb rgb_scaled(uint32_t rgb, uint8_t b) {
+    uint8_t scaled = hsb_scale_min_max((struct zmk_led_hsb){b : b}).b;
+
+    return (struct led_rgb){
+        r : ((rgb >> 16) & 0xFF) * scaled / BRT_MAX,
+        g : ((rgb >> 8) & 0xFF) * scaled / BRT_MAX,
+        b : (rgb & 0xFF) * scaled / BRT_MAX,
+    };
+}
+
+#define LAYER_COLORS_NODE DT_INST(0, zmk_underglow_layer_colors)
+
+#if DT_NODE_EXISTS(LAYER_COLORS_NODE) &&                                                           \
+    (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+#define HAS_LAYER_COLORS 1
+
+struct layer_colors {
+    zmk_keymap_layer_id_t layer;
+    bool has_background;
+    uint32_t background;
+    const uint8_t *leds;
+    const uint32_t *colors;
+    size_t len;
+};
+
+#define LAYER_COLORS_ARRAYS(node)                                                                  \
+    BUILD_ASSERT(DT_PROP_LEN(node, leds) == DT_PROP_LEN(node, colors),                             \
+                 "Underglow layer colours need one colour per LED");                               \
+    static const uint8_t UTIL_CAT(layer_leds_, DT_DEP_ORD(node))[] = DT_PROP(node, leds);          \
+    static const uint32_t UTIL_CAT(layer_colors_, DT_DEP_ORD(node))[] = DT_PROP(node, colors);
+
+DT_FOREACH_CHILD(LAYER_COLORS_NODE, LAYER_COLORS_ARRAYS)
+
+#define LAYER_COLORS_ENTRY(node)                                                                   \
+    {                                                                                              \
+        layer : DT_PROP(node, layer),                                                              \
+        has_background : DT_NODE_HAS_PROP(node, background),                                       \
+        background : DT_PROP_OR(node, background, 0),                                              \
+        leds : UTIL_CAT(layer_leds_, DT_DEP_ORD(node)),                                            \
+        colors : UTIL_CAT(layer_colors_, DT_DEP_ORD(node)),                                        \
+        len : DT_PROP_LEN(node, leds),                                                             \
+    },
+
+static const struct layer_colors layer_colors[] = {
+    DT_FOREACH_CHILD(LAYER_COLORS_NODE, LAYER_COLORS_ENTRY)};
+
+static void zmk_rgb_underglow_apply_layer_colors(void) {
+    const struct layer_colors *active = NULL;
+
+    for (int i = 0; i < ARRAY_SIZE(layer_colors); i++) {
+        if (zmk_keymap_layer_active(layer_colors[i].layer) &&
+            (!active || layer_colors[i].layer > active->layer)) {
+            active = &layer_colors[i];
+        }
+    }
+
+    if (!active) {
+        return;
+    }
+
+    if (active->has_background) {
+        for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+            pixels[i] = rgb_scaled(active->background, state.color.b);
+        }
+    }
+
+    for (int i = 0; i < active->len; i++) {
+        pixels[active->leds[i]] = rgb_scaled(active->colors[i], state.color.b);
+    }
+}
+#endif
+
 static void zmk_rgb_underglow_effect_solid(void) {
     for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
         pixels[i] = hsb_to_rgb(hsb_scale_min_max(state.color));
     }
+
+#if defined(HAS_LAYER_COLORS)
+    zmk_rgb_underglow_apply_layer_colors();
+#endif
 }
 
 static void zmk_rgb_underglow_effect_breathe(void) {
