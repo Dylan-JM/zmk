@@ -162,6 +162,7 @@ static struct {
     bool low;
     bool usb;
     bool charged;
+    bool stale;
 } battery;
 #endif
 
@@ -265,7 +266,7 @@ static void zmk_rgb_underglow_apply_battery_row(void) {
     }
 }
 
-static void rgb_underglow_update_battery(void);
+static void rgb_underglow_update_battery(bool sampled);
 #endif
 
 static void zmk_rgb_underglow_effect_solid(void) {
@@ -322,7 +323,7 @@ static void zmk_rgb_underglow_effect_swirl(void) {
 
 static void zmk_rgb_underglow_tick(struct k_work *work) {
 #if defined(HAS_BATTERY_ROW)
-    rgb_underglow_update_battery();
+    rgb_underglow_update_battery(false);
 #endif
 
     if (!state.on) {
@@ -396,7 +397,7 @@ static void rgb_underglow_apply_power(bool on) {
 }
 
 #if defined(HAS_BATTERY_ROW)
-static void rgb_underglow_update_battery(void) {
+static void rgb_underglow_update_battery(bool sampled) {
     uint8_t soc = zmk_battery_state_of_charge();
     bool usb = nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
     bool was_low = battery.low;
@@ -406,13 +407,20 @@ static void rgb_underglow_update_battery(void) {
         return;
     }
 
-    if (!usb) {
-        battery.low =
-            soc <= CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY ||
-            (battery.low && !battery.usb && soc < CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY_CLEAR);
+    if (usb) {
+        // low held while charging, reading is inflated
+        battery.charged = battery.charged || soc >= CONFIG_ZMK_RGB_UNDERGLOW_CHARGED;
+        battery.low = battery.low && !battery.charged;
+    } else if (battery.usb) {
+        // unplugged, hold until a fresh sample
+        battery.charged = false;
+        battery.stale = true;
+    } else if (sampled || !battery.stale) {
+        battery.stale = false;
+        battery.low = soc <= CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY ||
+                      (battery.low && soc < CONFIG_ZMK_RGB_UNDERGLOW_LOW_BATTERY_CLEAR);
     }
     battery.usb = usb;
-    battery.charged = usb && soc >= CONFIG_ZMK_RGB_UNDERGLOW_CHARGED;
 
     if (battery.low != was_low && !state.on && sleep_state.is_awake) {
         rgb_underglow_apply_power(battery.low);
@@ -420,7 +428,7 @@ static void rgb_underglow_update_battery(void) {
 }
 
 static int rgb_underglow_battery_listener(const zmk_event_t *eh) {
-    rgb_underglow_update_battery();
+    rgb_underglow_update_battery(true);
     return ZMK_EV_EVENT_BUBBLE;
 }
 
